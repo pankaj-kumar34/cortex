@@ -1,0 +1,287 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+  concurrency: 8
+
+  go: ""
+
+  modules-download-mode: readonly
+
+  issues-exit-code: 1
+
+  tests: false
+
+  allow-parallel-runners: false
+
+linters:
+  default: none
+
+  enable:
+    # Default linters (fast and reliable)
+    - errcheck # Check for unchecked errors
+    - govet # Vet examines Go source code
+    - ineffassign # Detect ineffectual assignments
+    - staticcheck # Advanced Go linter (includes gosimple)
+    - unused # Check for unused code
+
+    # Essential additional linters
+    - bodyclose # Check HTTP response body is closed
+    - dogsled # Check for too many blank identifiers
+    - dupl # Code clone detection
+    - errorlint # Go 1.13+ error wrapping
+    - exhaustive # Check exhaustiveness of enum switch statements
+    - gochecknoinits # Check that no init functions are present
+    - goconst # Find repeated strings that could be constants
+    - gocritic # Comprehensive Go source code linter
+    - gocyclo # Compute cyclomatic complexity
+    - goprintffuncname # Check printf-like functions naming
+    - gosec # Security problems
+    - lll # Report long lines
+    - misspell # Find commonly misspelled English words
+    - mnd # Detect magic numbers
+    - modernize
+    - nakedret # Find naked returns
+    - noctx # Find HTTP request without context.Context
+    - nolintlint # Report ill-formed nolint directives
+    - revive # Fast, configurable linter
+    - unconvert # Remove unnecessary type conversions
+    - unparam # Report unused function parameters
+    - whitespace # Detect leading and trailing whitespace
+    - zerologlint
+
+    - nilnil # Checks for simultaneous nil return values
+    - nilerr # Finds code returning nil when error is not nil
+    - prealloc # Finds slice declarations that could be preallocated
+    - predeclared # Finds shadowing of predeclared identifiers
+    - wastedassign # Finds wasted assignment statements
+
+    - depguard # Control package imports and dependencies
+    - errname # Enforce error naming conventions (Err prefix)
+    - forcetypeassert # Find forced type assertions (prevents panics)
+    - goheader # Check file headers with template support
+    - mirror # Reports wrong mirror patterns of bytes/strings usage
+    - perfsprint # Optimize fmt.Sprintf usage (auto-fix, performance)
+
+  settings:
+    dupl:
+      threshold: 150
+
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+
+    errorlint:
+      errorf: true
+      asserts: true
+      comparison: true
+
+    exhaustive:
+      default-signifies-exhaustive: true
+
+    goconst:
+      min-len: 4
+      min-occurrences: 3
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+        - style
+      disabled-checks:
+        - dupImport
+        - ifElseChain
+        - octalLiteral
+        - whyNoLint
+        - wrapperFunc
+
+    gocyclo:
+      min-complexity: 15
+
+    gosec:
+      severity: medium
+      confidence: medium
+      excludes:
+        - G104 # Covered by errcheck
+
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+        - shadow
+
+    lll:
+      line-length: 120
+      tab-width: 4
+
+    misspell:
+      locale: US
+
+    mnd:
+      checks:
+        - argument
+        - case
+        - condition
+        - operation
+        - return
+        - assign
+      ignored-numbers:
+        - "0"
+        - "1"
+        - "2"
+        - "10"
+        - "100"
+        - "1000"
+
+    nakedret:
+      max-func-lines: 30
+
+    nolintlint:
+      allow-unused: false
+      require-explanation: false
+      require-specific: true
+
+    thelper:
+      test:
+        first: true
+        name: true
+        begin: true
+
+    revive:
+      confidence: 0.8
+      severity: warning
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: empty-block
+        - name: empty-lines
+        - name: error-naming
+        - name: error-return
+        - name: error-strings
+        - name: errorf
+        - name: exported
+        - name: if-return
+        - name: increment-decrement
+        - name: indent-error-flow
+        - name: package-comments
+        - name: range
+        - name: receiver-naming
+        - name: redefines-builtin-id
+        - name: superfluous-else
+        - name: time-naming
+        - name: unexported-return
+        - name: unreachable-code
+        - name: unused-parameter
+        - name: var-declaration
+        - name: var-naming
+
+    staticcheck:
+      checks:
+        - all
+
+    unparam:
+      check-exported: true
+
+    # New linter settings
+    depguard:
+      rules:
+        main:
+          deny:
+            - pkg: "io/ioutil"
+              desc: "Use os or io package instead (deprecated since Go 1.16)"
+            - pkg: "github.com/pkg/errors"
+              desc: "Use standard errors package with fmt.Errorf and %w"
+
+    godot:
+      scope: declarations
+      capital: true
+
+  exclusions:
+    generated: lax
+
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+
+    paths:
+      - README.md
+      - .github
+      - .hooks
+      - .vscode
+      - third_party$
+      - builtin$
+      - examples$
+      - vendor$
+      - testdata$
+
+    rules:
+      - linters:
+          - gocyclo
+          - errcheck
+          - dupl
+          - gosec
+        path: _test\.go
+
+      - linters:
+          - gochecknoinits
+        path: main\.go
+
+      - linters:
+          - gochecknoglobals
+        path: main\.go
+
+      - text: 'shadow: declaration of "err"'
+        linters:
+          - govet
+
+      - linters:
+          - lll
+        source: "^//go:generate "
+
+      # Allow test packages to not be separate
+      - linters:
+          - testpackage
+        path: _test\.go
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  uniq-by-line: true
+  new: false
+  fix: true
+
+formatters:
+  enable:
+    - gofmt
+    # - gofumpt
+    - goimports
+
+  exclusions:
+    generated: lax
+    paths:
+      - README.md
+      - .github
+      - .hooks
+      - .vscode
+      - third_party$
+      - builtin$
+      - examples$
+      - vendor$
+  settings:
+    # gofumpt:
+    #   extra-rules: false
+    gofmt:
+      rewrite-rules:
+        - pattern: "interface{}"
+          replacement: "any"
+
+output:
+  sort-order:
+    - linter
+    - severity
+    - file

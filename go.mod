@@ -1,6 +1,6 @@
 module github.com/pankaj-kumar34/cortex
 
-go 1.25.8
+go 1.25.9
 
 require (
 	github.com/gorilla/websocket v1.5.3

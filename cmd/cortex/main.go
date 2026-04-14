@@ -41,7 +41,7 @@ func main() {
 		}
 	}
 
-	logger.Info().Msg("Starting Cortex Load Tester - Master Node")
+	logger.Info().Msg("Starting Cortex - Master Node")
 
 	if created {
 		logger.Info().

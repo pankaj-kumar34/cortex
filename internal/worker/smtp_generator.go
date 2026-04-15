@@ -4,26 +4,30 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"net/smtp"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/pankaj-kumar34/cortex/internal/logger"
 	"github.com/pankaj-kumar34/cortex/internal/models"
+	gomail "github.com/wneessen/go-mail"
 )
 
 // SMTPGenerator generates SMTP load
 type SMTPGenerator struct {
-	config      *models.SMTPConfig
-	metrics     *SMTPMetrics
-	ctx         context.Context
-	cancel      context.CancelFunc
-	wg          sync.WaitGroup
-	startTime   time.Time
-	patternCalc *LoadPatternCalculator
+	config           *models.SMTPConfig
+	metrics          *SMTPMetrics
+	ctx              context.Context
+	cancel           context.CancelFunc
+	sendCtx          context.Context
+	sendCancel       context.CancelFunc
+	hardStopCtx      context.Context
+	hardStopCancel   context.CancelFunc
+	durationDoneOnce sync.Once
+	wg               sync.WaitGroup
+	startTime        time.Time
+	patternCalc      *LoadPatternCalculator
 }
 
 // SMTPMetrics tracks SMTP load test metrics
@@ -42,6 +46,8 @@ type SMTPMetrics struct {
 // NewSMTPGenerator creates a new SMTP load generator
 func NewSMTPGenerator(config *models.SMTPConfig) *SMTPGenerator {
 	ctx, cancel := context.WithTimeout(context.Background(), config.Duration)
+	hardStopCtx, hardStopCancel := context.WithCancel(context.Background())
+	sendCtx, sendCancel := context.WithCancel(context.Background())
 	now := time.Now()
 
 	// Initialize load pattern calculator
@@ -68,17 +74,24 @@ func NewSMTPGenerator(config *models.SMTPConfig) *SMTPGenerator {
 		config.PatternConfig,
 	)
 
-	return &SMTPGenerator{
+	sg := &SMTPGenerator{
 		config: config,
 		metrics: &SMTPMetrics{
 			latencies:     make([]time.Duration, 0, 10000), //nolint:mnd // Initial capacity for latency tracking
 			lastCheckTime: now,
 		},
-		ctx:         ctx,
-		cancel:      cancel,
-		startTime:   now,
-		patternCalc: patternCalc,
+		ctx:            ctx,
+		cancel:         cancel,
+		sendCtx:        sendCtx,
+		sendCancel:     sendCancel,
+		hardStopCtx:    hardStopCtx,
+		hardStopCancel: hardStopCancel,
+		startTime:      now,
+		patternCalc:    patternCalc,
 	}
+	go sg.watchDurationCompletion()
+	go sg.watchHardStop()
+	return sg
 }
 
 // Start begins the SMTP load test
@@ -151,12 +164,23 @@ func (sg *SMTPGenerator) Start() {
 // Stop stops the SMTP load test
 func (sg *SMTPGenerator) Stop() {
 	sg.cancel()
+	sg.scheduleHardStop()
 	sg.wg.Wait()
+	sg.hardStopCancel()
+	sg.sendCancel()
 }
 
 // sendEmail sends a single email
 func (sg *SMTPGenerator) sendEmail() {
 	defer sg.wg.Done()
+
+	// Check if context is already cancelled before attempting to send
+	select {
+	case <-sg.ctx.Done():
+		// Test duration completed, don't send email
+		return
+	default:
+	}
 
 	// Count as sent before attempting
 	atomic.AddInt64(&sg.metrics.emailsSent, 1)
@@ -194,112 +218,114 @@ func (sg *SMTPGenerator) sendEmail() {
 		Msg("SMTP email sent")
 }
 
-// sendSMTPEmail sends an email via SMTP
+// sendSMTPEmail sends an email via SMTP using go-mail package
 func (sg *SMTPGenerator) sendSMTPEmail() error {
-	// Build email message
-	message := sg.buildEmailMessage()
+	// Create a context with timeout that can be hard-cancelled shortly after test duration completion
+	ctx, cancel := context.WithTimeout(sg.sendCtx, sg.config.Timeout)
+	defer cancel()
 
-	// Connect to SMTP server
-	addr := fmt.Sprintf("%s:%d", sg.config.Host, sg.config.Port)
-
-	var auth smtp.Auth
-	if sg.config.Username != "" && sg.config.Password != "" {
-		auth = smtp.PlainAuth("", sg.config.Username, sg.config.Password, sg.config.Host)
-	}
-
-	// Send email with or without TLS
-	if sg.config.UseTLS {
-		return sg.sendWithTLS(addr, auth, message)
-	}
-
-	return smtp.SendMail(addr, auth, sg.config.From, sg.config.To, []byte(message))
-}
-
-// sendWithTLS sends email using TLS
-func (sg *SMTPGenerator) sendWithTLS(addr string, auth smtp.Auth, message string) error {
-	// Create TLS config
-	tlsConfig := &tls.Config{
-		ServerName:         sg.config.Host,
-		InsecureSkipVerify: sg.config.InsecureSkipVerify,
-	}
-
-	// Connect to server with context
-	dialer := &tls.Dialer{
-		Config: tlsConfig,
-	}
-	conn, err := dialer.DialContext(context.Background(), "tcp", addr)
-	if err != nil {
-		return fmt.Errorf("failed to connect: %w", err)
-	}
-	defer conn.Close()
-
-	// Create SMTP client
-	client, err := smtp.NewClient(conn, sg.config.Host)
-	if err != nil {
-		return fmt.Errorf("failed to create client: %w", err)
-	}
-	defer func() {
-		_ = client.Quit() //nolint:errcheck // Defer cleanup, error already logged
-	}()
-
-	// Authenticate if credentials provided
-	if auth != nil {
-		if err := client.Auth(auth); err != nil {
-			return fmt.Errorf("authentication failed: %w", err)
-		}
-	}
+	// Create new message
+	msg := gomail.NewMsg()
 
 	// Set sender
-	if err := client.Mail(sg.config.From); err != nil {
+	if err := msg.From(sg.config.From); err != nil {
 		return fmt.Errorf("failed to set sender: %w", err)
 	}
 
 	// Set recipients
-	for _, recipient := range sg.config.To {
-		if err := client.Rcpt(recipient); err != nil {
-			return fmt.Errorf("failed to set recipient: %w", err)
+	if err := msg.To(sg.config.To...); err != nil {
+		return fmt.Errorf("failed to set recipients: %w", err)
+	}
+
+	// Set subject and body
+	msg.Subject(sg.config.Subject)
+	msg.SetBodyString(gomail.TypeTextPlain, sg.config.Body)
+
+	// Attach files if specified
+	for _, attachmentPath := range sg.config.Attachments {
+		if attachmentPath != "" {
+			msg.AttachFile(attachmentPath)
 		}
 	}
 
-	// Send message
-	w, err := client.Data()
-	if err != nil {
-		return fmt.Errorf("failed to get data writer: %w", err)
+	// Create client options
+	clientOptions := []gomail.Option{
+		gomail.WithPort(sg.config.Port),
+		gomail.WithTimeout(sg.config.Timeout),
 	}
 
-	_, err = w.Write([]byte(message))
-	if err != nil {
-		return fmt.Errorf("failed to write message: %w", err)
+	// Configure TLS based on port and settings
+	// Port 465 uses implicit TLS (SSL), other ports use STARTTLS
+	if sg.config.Port == 465 {
+		// Port 465: Use implicit TLS/SSL
+		clientOptions = append(clientOptions, gomail.WithSSL())
+		if sg.config.InsecureSkipVerify {
+			clientOptions = append(clientOptions, gomail.WithTLSConfig(&tls.Config{
+				InsecureSkipVerify: true,
+			}))
+		}
+	} else {
+		// Ports 587, 25, etc: Use STARTTLS (do NOT use WithSSL or WithSSLPort)
+		if sg.config.UseTLS || sg.config.Port == 587 {
+			// Use TLSOpportunistic for STARTTLS
+			clientOptions = append(clientOptions, gomail.WithTLSPolicy(gomail.TLSOpportunistic))
+			if sg.config.InsecureSkipVerify {
+				clientOptions = append(clientOptions, gomail.WithTLSConfig(&tls.Config{
+					InsecureSkipVerify: true,
+				}))
+			}
+		} else {
+			// Explicitly disable TLS
+			clientOptions = append(clientOptions, gomail.WithTLSPolicy(gomail.NoTLS))
+		}
 	}
 
-	err = w.Close()
+	// Configure authentication
+	if sg.config.Username != "" && sg.config.Password != "" {
+		clientOptions = append(clientOptions,
+			gomail.WithSMTPAuth(gomail.SMTPAuthPlain),
+			gomail.WithUsername(sg.config.Username),
+			gomail.WithPassword(sg.config.Password),
+		)
+	}
+
+	// Create client
+	client, err := gomail.NewClient(sg.config.Host, clientOptions...)
 	if err != nil {
-		return fmt.Errorf("failed to close writer: %w", err)
+		return fmt.Errorf("failed to create client: %w", err)
+	}
+
+	// Send email with context
+	if err := client.DialAndSendWithContext(ctx, msg); err != nil {
+		return fmt.Errorf("failed to send email: %w", err)
 	}
 
 	return nil
 }
 
-// buildEmailMessage constructs the email message
-func (sg *SMTPGenerator) buildEmailMessage() string {
-	message := fmt.Sprintf("From: %s\r\n", sg.config.From)
-	message += fmt.Sprintf("To: %s\r\n", sg.config.To[0])
+func (sg *SMTPGenerator) watchDurationCompletion() {
+	<-sg.ctx.Done()
+	sg.scheduleHardStop()
+}
 
-	if len(sg.config.To) > 1 {
-		var messageSb277 strings.Builder
-		for _, recipient := range sg.config.To[1:] {
-			fmt.Fprintf(&messageSb277, "Cc: %s\r\n", recipient)
-		}
-		message += messageSb277.String()
-	}
+func (sg *SMTPGenerator) scheduleHardStop() {
+	sg.durationDoneOnce.Do(func() {
+		go func() {
+			timer := time.NewTimer(3 * time.Second)
+			defer timer.Stop()
 
-	message += fmt.Sprintf("Subject: %s\r\n", sg.config.Subject)
-	message += "MIME-Version: 1.0\r\n"
-	message += "Content-Type: text/plain; charset=utf-8\r\n"
-	message += "\r\n"
-	message += sg.config.Body
+			select {
+			case <-timer.C:
+				sg.hardStopCancel()
+			case <-sg.hardStopCtx.Done():
+			}
+		}()
+	})
+}
 
-	return message
+func (sg *SMTPGenerator) watchHardStop() {
+	<-sg.hardStopCtx.Done()
+	sg.sendCancel()
 }
 
 // GetMetrics returns current metrics

@@ -59,6 +59,8 @@ type SMTPTestConfig struct {
 	To                 []string           `yaml:"to"`
 	Subject            string             `yaml:"subject"`
 	Body               string             `yaml:"body"`
+	Attachments        []string           `yaml:"attachments,omitempty"`
+	Timeout            string             `yaml:"timeout"`
 	UseTLS             bool               `yaml:"use_tls"`
 	Username           string             `yaml:"username"`
 	Password           string             `yaml:"password"`
@@ -497,6 +499,14 @@ func (c *Config) GetSMTPConfig() (*models.SMTPConfig, error) {
 		return nil, fmt.Errorf("invalid duration: %w", err)
 	}
 
+	timeout := 30 * time.Second //nolint:mnd // Default SMTP timeout
+	if testCfg.SMTP.Timeout != "" {
+		timeout, err = time.ParseDuration(testCfg.SMTP.Timeout)
+		if err != nil {
+			return nil, fmt.Errorf("invalid timeout: %w", err)
+		}
+	}
+
 	// Convert pattern config
 	var patternConfig *models.PatternConfig
 	if testCfg.SMTP.PatternConfig != nil {
@@ -513,7 +523,9 @@ func (c *Config) GetSMTPConfig() (*models.SMTPConfig, error) {
 		To:                 testCfg.SMTP.To,
 		Subject:            testCfg.SMTP.Subject,
 		Body:               testCfg.SMTP.Body,
+		Attachments:        testCfg.SMTP.Attachments,
 		Duration:           duration,
+		Timeout:            timeout,
 		UseTLS:             testCfg.SMTP.UseTLS,
 		Username:           testCfg.SMTP.Username,
 		Password:           testCfg.SMTP.Password,

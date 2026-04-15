@@ -181,9 +181,16 @@ func (hg *HTTPGenerator) Stop() {
 func (hg *HTTPGenerator) sendRequest() {
 	defer hg.wg.Done()
 
-	// Create request with its own timeout context (not tied to test duration)
-	// This allows requests to complete even if test duration expires
-	ctx, cancel := context.WithTimeout(context.Background(), hg.config.Timeout)
+	// Check if context is already cancelled before attempting to send
+	select {
+	case <-hg.ctx.Done():
+		// Test duration completed, don't send request
+		return
+	default:
+	}
+
+	// Create request with timeout context that respects the parent context
+	ctx, cancel := context.WithTimeout(hg.ctx, hg.config.Timeout)
 	defer cancel()
 
 	// Create request

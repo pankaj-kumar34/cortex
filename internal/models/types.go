@@ -100,7 +100,9 @@ type SMTPConfig struct {
 	To                 []string       `json:"to"`
 	Subject            string         `json:"subject"`
 	Body               string         `json:"body"`
+	Attachments        []string       `json:"attachments,omitempty"`
 	Duration           time.Duration  `json:"duration"`
+	Timeout            time.Duration  `json:"timeout"`
 	UseTLS             bool           `json:"use_tls"`
 	Username           string         `json:"username"`
 	Password           string         `json:"password"`
@@ -216,6 +218,8 @@ type DashboardSMTPConfigPayload struct {
 	To                 []string                `json:"to"`
 	Subject            string                  `json:"subject"`
 	Body               string                  `json:"body"`
+	Attachments        []string                `json:"attachments,omitempty"`
+	Timeout            string                  `json:"timeout"`
 	UseTLS             bool                    `json:"use_tls"`
 	Username           string                  `json:"username"`
 	Password           string                  `json:"password"`
